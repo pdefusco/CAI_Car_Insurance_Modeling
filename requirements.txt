@@ -1,2 +1,10 @@
 dbldatagen
 apache-sedona
+matplotlib
+pandas
+geopandas
+folium
+osmnx
+shapely
+geopy
+numpy
