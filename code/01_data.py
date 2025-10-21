@@ -65,22 +65,12 @@ def read_sedona_csv(filepath, schema_cols):
 
 # Paths to your files
 accidents_path = "las_vegas_accidents.csv"
-boundary_path = "las_vegas_boundary.csv"
 streets_path = "las_vegas_streets.csv"
-pois_path = "las_vegas_pois.csv"
 
 # Read and show accidents
 df_accidents = read_sedona_csv(accidents_path, None)
 df_accidents.show()
 
-# Read and show city boundary
-df_boundary = read_sedona_csv(boundary_path, None)
-df_boundary.show()
-
 # Read and show street network
 df_streets = read_sedona_csv(streets_path, None)
 df_streets.show()
-
-# Read and show POIs
-df_pois = read_sedona_csv(pois_path, None)
-df_pois.show()

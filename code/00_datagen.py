@@ -43,7 +43,7 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import Point
 import calendar
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # --- CONFIGURATION ---
 
@@ -101,7 +101,6 @@ hotspots = {
     }
 }
 
-# Holidays (month, day)
 HOLIDAYS = [(1, 1), (7, 4), (11, 25), (12, 25)]
 WEATHER_TYPES = ["clear", "rain", "snow"]
 
@@ -182,11 +181,18 @@ def choose_accident_type(base_weights, month, weather):
     norm_weights = {k: v / total for k, v in weights.items()}
     return random.choices(list(norm_weights.keys()), weights=norm_weights.values(), k=1)[0]
 
-# --- LOAD STREET DATA ---
+# --- LOAD METRO STREET NETWORK ---
 
-print("Loading Las Vegas street network...")
-G = ox.graph_from_place("Las Vegas, Nevada, USA", network_type='drive')
+print("Loading Las Vegas metro area street network...")
+places = [
+    "Las Vegas, Nevada, USA", "North Las Vegas, Nevada, USA",
+    "Henderson, Nevada, USA", "Summerlin South, Nevada, USA",
+    "Paradise, Nevada, USA", "Enterprise, Nevada, USA",
+    "Spring Valley, Nevada, USA", "Sunrise Manor, Nevada, USA"
+]
+G = ox.graph_from_place(places, network_type='drive')
 edges = ox.graph_to_gdfs(G, nodes=False, edges=True)
+
 coords = []
 for geom in edges['geometry']:
     if geom.geom_type == 'LineString':
@@ -197,7 +203,7 @@ for geom in edges['geometry']:
 
 # --- GENERATE DATA ---
 
-total_accidents = 500
+total_accidents = 100000
 year_weights = [1, 1.1, 1.2, 1.3, 1.4, 1.5]
 year_labels = list(range(2020, 2026))
 normalized = [w / sum(year_weights) for w in year_weights]
@@ -219,9 +225,14 @@ for year, count in year_distribution.items():
         make, model = random.choice(car_makes_models)
         year_car = random.randint(2000, 2022)
         is_fault = random.choice([0, 1])
-        payout = max(0, round(np.random.normal(8000 if not is_fault else 3000, 2000), 2))
+        is_dui = random.choices([0, 1], weights=[0.85, 0.15])[0]
+        payout = 0 if is_dui else max(0, round(np.random.normal(8000 if not is_fault else 3000, 2000), 2))
 
+        accident_counter = 1  # Initialize a counter before your loops
+
+        # Inside each loop where you append to `data`:
         data.append({
+            "accident_id": accident_counter,
             "latitude": lat,
             "longitude": lon,
             "accident_type": acc_type,
@@ -232,11 +243,14 @@ for year, count in year_distribution.items():
             "car_model": model,
             "car_year": year_car,
             "is_driver_at_fault": is_fault,
+            "is_driver_dui": is_dui,
             "policy_payout": payout,
-            "location_type": "hotspot",
+            "location_type": "hotspot",  # or "general"
             "timestamp": timestamp,
             "weather": weather
         })
+        accident_counter += 1
+
 
     for _ in range(int(count * 0.4)):  # General accidents
         lon, lat = random.choice(coords)
@@ -248,9 +262,14 @@ for year, count in year_distribution.items():
         make, model = random.choice(car_makes_models)
         year_car = random.randint(2000, 2022)
         is_fault = random.choice([0, 1])
-        payout = max(0, round(np.random.normal(8000 if not is_fault else 3000, 2000), 2))
+        is_dui = random.choices([0, 1], weights=[0.9, 0.1])[0]
+        payout = 0 if is_dui else max(0, round(np.random.normal(8000 if not is_fault else 3000, 2000), 2))
 
+        accident_counter = 1  # Initialize a counter before your loops
+
+        # Inside each loop where you append to `data`:
         data.append({
+            "accident_id": accident_counter,
             "latitude": lat,
             "longitude": lon,
             "accident_type": acc_type,
@@ -261,20 +280,22 @@ for year, count in year_distribution.items():
             "car_model": model,
             "car_year": year_car,
             "is_driver_at_fault": is_fault,
+            "is_driver_dui": is_dui,
             "policy_payout": payout,
-            "location_type": "general",
+            "location_type": "hotspot",  # or "general"
             "timestamp": timestamp,
             "weather": weather
         })
+        accident_counter += 1
 
-# --- EXPORT TO CSV FOR SEDONA ---
+
+# --- EXPORT TO CSV ---
 
 print("Saving data to Sedona-compatible CSV...")
 df = pd.DataFrame(data)
 df["wkt"] = df.apply(lambda row: f"POINT ({row['longitude']} {row['latitude']})", axis=1)
 df.to_csv("las_vegas_accidents.csv", index=False)
-print("Done! File saved as 'accidents_sedona.csv'")
-
+print("✅ Done! File saved as 'las_vegas_accidents.csv'")
 
 import osmnx as ox
 import geopandas as gpd
@@ -287,18 +308,6 @@ ox.settings.default_crs = "EPSG:4326"
 # City name
 city_name = "Las Vegas, Nevada, USA"
 
-# --- 1. DOWNLOAD CITY BOUNDARY ---
-
-print("Downloading city boundary...")
-city_boundary = ox.geocode_to_gdf(city_name)
-
-# Add WKT geometry column
-city_boundary['wkt'] = city_boundary['geometry'].apply(lambda geom: geom.wkt)
-city_boundary.drop(columns='geometry', inplace=True)
-
-# Export
-city_boundary.to_csv("las_vegas_boundary.csv", index=False)
-print("✓ City boundary saved as las_vegas_boundary.csv")
 
 # --- 2. DOWNLOAD STREET NETWORK (DRIVEABLE) ---
 
@@ -315,37 +324,34 @@ edges.drop(columns='geometry', inplace=True)
 edges.to_csv("las_vegas_streets.csv", index=False)
 print("✓ Street network saved as las_vegas_streets.csv")
 
-# --- 3. DOWNLOAD POINTS OF INTEREST (POIs) ---
+# ---- 3. Casinos POI's
 
-print("Downloading POIs...")
-tags = {
-    "amenity": True,
-    "shop": True,
-    "tourism": True,
-    "leisure": True,
-    "office": True
+import osmnx as ox
+
+# Define casino-related OSM tags
+casino_tags = {
+    "amenity": ["casino"],
+    "leisure": ["adult_gaming_centre"],
+    "tourism": ["attraction"]
 }
 
-pois = ox.geometries_from_place(city_name, tags)
+las_vegas_metro = [
+    "Las Vegas, Nevada, USA",
+    "Henderson, Nevada, USA",
+    "North Las Vegas, Nevada, USA",
+    "Paradise, Nevada, USA",
+    "Spring Valley, Nevada, USA",
+    "Enterprise, Nevada, USA"
+]
 
-# Filter relevant columns
-keep_cols = ['amenity', 'shop', 'tourism', 'leisure', 'office', 'name', 'geometry']
-pois = pois[[col for col in keep_cols if col in pois.columns]]
+# Get POIs for all places
+casino_pois = ox.features.features_from_place(las_vegas_metro, tags=casino_tags)
 
-# Keep only point and polygon geometries
-pois = pois[pois.geometry.type.isin(['Point', 'Polygon', 'MultiPolygon', 'LineString'])].copy()
+# Optional: Filter further by name (for known casinos)
+casino_pois = casino_pois[casino_pois['name'].str.contains("casino", case=False, na=False)]
 
-# Add WKT column for Sedona
-pois['wkt'] = pois['geometry'].apply(lambda g: g.wkt)
-pois.drop(columns='geometry', inplace=True)
+# Preview
+print(casino_pois[['name', 'amenity', 'leisure', 'tourism', 'geometry']].head())
 
-# Export
-pois.to_csv("las_vegas_pois.csv", index=False)
-print("✓ POIs saved as las_vegas_pois.csv")
-
-# --- SUMMARY ---
-
-print("\n All datasets saved as Sedona-compatible CSVs:")
-print(" - las_vegas_boundary.csv")
-print(" - las_vegas_streets.csv")
-print(" - las_vegas_pois.csv")
+casino_pois.to_csv("casino_pois.csv", index=False)
+print("✓ Casino pois saved as las_vegas_streets.csv")
