@@ -37,27 +37,50 @@
 # #  Author(s): Paul de Fusco
 #***************************************************************************/
 
+from sedona.register import SedonaRegistrator
+from sedona.utils import SedonaKryoRegistrator, KryoSerializer
+from sedona.sql.types import GeometryType
+import pyspark.sql.functions as F
 from sedona.spark import *
 from pyspark.sql import SparkSession
 
 # Create a Spark session with Sedona configuration
 config = SedonaContext.builder().\
     config('spark.jars.packages',
-           'org.apache.sedona:sedona-spark-3.5_2.12:1.8.0,'
-           'org.datasyslab:geotools-wrapper:1.8.0-33.1').\
+           'org.apache.sedona:sedona-spark-shaded-3.5_2.12:1.7.0,'
+           'org.datasyslab:geotools-wrapper:1.7.0-28.5').\
     getOrCreate()
 sedona = SedonaContext.create(config)
 
-# Specify the path to your .shp file
-path_to_shp = "/cdsw/home/tl_2023_32003_faces.shp"
+# Function to read CSV and convert WKT to geometry column
+def read_sedona_csv(filepath, schema_cols):
+    df = sedona.read.csv(filepath, header=True, inferSchema=True)
+    # Convert WKT column to geometry
+    df = df.withColumn("geometry", F.expr("ST_GeomFromWKT(wkt)"))
+    # Show schema and first rows
+    print(f"Data from {filepath}:")
+    df.printSchema()
+    df.show(5, truncate=False)
+    return df
 
-# Read the Shapefile into a DataFrame
-counties_df = sedona.read.format("shapefile").load(path_to_shp)
+# Paths to your files
+accidents_path = "las_vegas_accidents.csv"
+boundary_path = "las_vegas_boundary.csv"
+streets_path = "las_vegas_streets.csv"
+pois_path = "las_vegas_pois.csv"
 
-# Display the schema and some data
-counties_df.printSchema()
-counties_df.show()
+# Read and show accidents
+df_accidents = read_sedona_csv(accidents_path, None)
+df_accidents.show()
 
-# To use it with Spatial SQL, create a temporary view
-#counties_df.createOrReplaceTempView("counties")
-#sedona.sql("SELECT STATEFP, NAME, geometry FROM counties WHERE STATEFP = '48'").show(5)
+# Read and show city boundary
+df_boundary = read_sedona_csv(boundary_path, None)
+df_boundary.show()
+
+# Read and show street network
+df_streets = read_sedona_csv(streets_path, None)
+df_streets.show()
+
+# Read and show POIs
+df_pois = read_sedona_csv(pois_path, None)
+df_pois.show()

@@ -37,84 +37,315 @@
 # #  Author(s): Paul de Fusco
 #***************************************************************************/
 
-from pyspark.sql import SparkSession
-from dbldatagen import DataGenerator, FakerTextProvider
+import osmnx as ox
 import random
-
-spark = SparkSession.builder \
-    .appName("LasVegasAccidentsSyntheticData") \
-    .getOrCreate()
-
-row_count = 10000
-
-# High-risk intersection centers (lat, lon)
-hotspots = [
-    (36.1256, -115.2440),  # Rainbow & Flamingo
-    (36.1446, -115.2077),  # Sahara & Decatur
-    (36.1585, -115.2065),  # Charleston & Decatur
-    (36.1025, -115.1676),  # Tropicana & Koval
-    (36.1458, -115.1372),  # Sahara & Maryland Pkwy
-    (36.1230, -115.0635),  # Boulder Hwy & Nellis & Flamingo
-]
-
-# For weighted geospatial points
-def get_skewed_latitude():
-    base = random.choices(hotspots, weights=[5,5,5,3,3,4])[0][0]
-    return round(random.gauss(base, 0.002), 6)
-
-def get_skewed_longitude():
-    base = random.choices(hotspots, weights=[5,5,5,3,3,4])[0][1]
-    return round(random.gauss(base, 0.002), 6)
-
-# Gaussian financial cost generators
-def cost_generator(at_fault):
-    if at_fault == 1:
-        return round(max(100, random.gauss(1500, 500)), 2)  # Lower avg cost
-    else:
-        return round(max(500, random.gauss(5000, 1500)), 2)  # Higher avg cost
-
-# Register UDFs for Spark
-from pyspark.sql.functions import udf, col
-from pyspark.sql.types import DoubleType, FloatType
-
-spark.udf.register("get_lat", get_skewed_latitude, DoubleType())
-spark.udf.register("get_lon", get_skewed_longitude, DoubleType())
-
-# Step 1: Define the data generator
-df_spec = DataGenerator(spark, rows=row_count, partitions=4) \
-    .withIdOutput() \
-    .withColumn("age", "integer", minValue=18, maxValue=80, random=True) \
-    .withColumn("gender", "string", values=['Male', 'Female', 'Other'], random=True) \
-    .withColumn("license_status", "string", values=["Valid", "Suspended", "Expired"], random=True) \
-    .withColumn("vehicle_make", "string", values=["Fauxda", "Chevrolux", "Yotota", "Bord", "Mazdai"], random=True) \
-    .withColumn("vehicle_model", "string", values=["Z-Force", "Cruizer", "Nimbus", "Ravix", "Tronx"], random=True) \
-    .withColumn("vehicle_year", "integer", minValue=1995, maxValue=2023, random=True) \
-    .withColumn("at_fault", "integer", values=[0, 1], weights=[0.4, 0.6], random=True) \
-    .withColumn("accident_type", "string",
-                values=["Head-on collision",
-                        "T-bone (side-impact) collision",
-                        "Rear-end collision",
-                        "Sideswipe collision",
-                        "Odd-angle collision"],
-                random=True) \
-    .withColumn("coverage_type", "string",
-                values=["Liability", "Collision", "Comprehensive", "Uninsured Motorist"],
-                random=True) \
-    .withColumn("latitude", "double", expr="get_lat()") \
-    .withColumn("longitude", "double", expr="get_lon()")
-
-# Step 2: Generate initial DataFrame
-df = df_spec.build()
-
-# Step 3: Add financial cost column based on 'at_fault'
-from pyspark.sql.functions import pandas_udf, IntegerType
+import numpy as np
 import pandas as pd
+from shapely.geometry import Point
+import calendar
+from datetime import datetime, timedelta
 
-@pandas_udf("float")
-def generate_cost_udf(at_fault_series: pd.Series) -> pd.Series:
-    return at_fault_series.apply(cost_generator)
+# --- CONFIGURATION ---
 
-df = df.withColumn("cost", generate_cost_udf(col("at_fault")))
+# Define accident hotspots
+hotspots = {
+    "charleston_rainbow": {
+        "coords": (36.1593, -115.2457),
+        "accident_weights": {
+            "t bone collision": 0.4,
+            "rear end collision": 0.2,
+            "side collision": 0.2,
+            "head on collision": 0.1,
+            "single vehicle accident": 0.1
+        }
+    },
+    "tropicana_rainbow": {
+        "coords": (36.1010, -115.2446),
+        "accident_weights": {
+            "rear end collision": 0.5,
+            "t bone collision": 0.2,
+            "side collision": 0.2,
+            "head on collision": 0.05,
+            "single vehicle accident": 0.05
+        }
+    },
+    "flamingo_rainbow": {
+        "coords": (36.1153, -115.2449),
+        "accident_weights": {
+            "side collision": 0.4,
+            "rear end collision": 0.3,
+            "t bone collision": 0.2,
+            "head on collision": 0.05,
+            "single vehicle accident": 0.05
+        }
+    },
+    "sahara_decatur": {
+        "coords": (36.1443, -115.2050),
+        "accident_weights": {
+            "head on collision": 0.4,
+            "t bone collision": 0.3,
+            "rear end collision": 0.15,
+            "side collision": 0.1,
+            "single vehicle accident": 0.05
+        }
+    },
+    "charleston_lamb": {
+        "coords": (36.1592, -115.0702),
+        "accident_weights": {
+            "single vehicle accident": 0.4,
+            "t bone collision": 0.3,
+            "rear end collision": 0.1,
+            "side collision": 0.1,
+            "head on collision": 0.1
+        }
+    }
+}
 
-# Show a few rows
-df.show(10, truncate=False)
+# Holidays (month, day)
+HOLIDAYS = [(1, 1), (7, 4), (11, 25), (12, 25)]
+WEATHER_TYPES = ["clear", "rain", "snow"]
+
+genders = ["male", "female", "non-binary"]
+education_levels = ["high school", "some college", "bachelor's", "master's", "PhD"]
+car_makes_models = [
+    ("Toyota", "Camry"), ("Honda", "Civic"), ("Ford", "Focus"),
+    ("Chevrolet", "Malibu"), ("Nissan", "Altima"), ("Tesla", "Model 3")
+]
+default_accident_weights = {
+    "t bone collision": 0.2,
+    "rear end collision": 0.2,
+    "side collision": 0.2,
+    "head on collision": 0.2,
+    "single vehicle accident": 0.2
+}
+
+# --- HELPER FUNCTIONS ---
+
+def sample_near_hotspot(center, radius_meters=300):
+    lat, lon = center
+    delta_lat = radius_meters / 111_000
+    delta_lon = radius_meters / (111_000 * np.cos(np.radians(lat)))
+    new_lat = np.random.normal(lat, delta_lat / 2)
+    new_lon = np.random.normal(lon, delta_lon / 2)
+    return new_lat, new_lon
+
+def is_holiday(month, day):
+    return (month, day) in HOLIDAYS
+
+def generate_timestamp_and_weather(hotspot_key=None, year=None):
+    if not year:
+        year = random.randint(2020, 2025)
+
+    month_weights = {
+        12: 1.2, 1: 1.2, 2: 1.1, 6: 1.2, 7: 1.3, 8: 1.1,
+        3: 1.0, 4: 1.0, 5: 1.0, 9: 1.0, 10: 1.0, 11: 1.0
+    }
+    months = list(month_weights.keys())
+    month = random.choices(months, weights=month_weights.values(), k=1)[0]
+    day = random.randint(1, calendar.monthrange(year, month)[1])
+    holiday = is_holiday(month, day)
+    weather = random.choices(WEATHER_TYPES, weights=[0.7, 0.25, 0.05])[0]
+
+    if holiday:
+        hour = random.choices(range(18, 24), k=1)[0]
+    elif hotspot_key in ["charleston_rainbow", "tropicana_rainbow"]:
+        hour = random.choices([0, 1, 2, 3, 21, 22, 23, 12], k=1)[0]
+    elif hotspot_key in ["sahara_decatur", "charleston_lamb", "flamingo_rainbow"]:
+        hour = random.choices([7, 8, 9, 16, 17, 18, 12], k=1)[0]
+    else:
+        hour = random.randint(0, 23)
+
+    minute = random.randint(0, 59)
+    try:
+        dt = datetime(year, month, day, hour, minute, 0)
+    except ValueError:
+        dt = datetime(year, month, 1, hour, minute, 0)
+
+    return dt.strftime("%Y-%m-%d %H:%M:%S"), weather, month
+
+def choose_accident_type(base_weights, month, weather):
+    weights = base_weights.copy()
+    if month in [12, 1, 2]:
+        weights["rear end collision"] += 0.1
+        weights["single vehicle accident"] += 0.1
+    elif month in [6, 7, 8]:
+        weights["t bone collision"] += 0.1
+        weights["side collision"] += 0.1
+    if weather == "rain":
+        weights["rear end collision"] += 0.2
+        weights["single vehicle accident"] += 0.1
+    elif weather == "snow":
+        weights["single vehicle accident"] += 0.3
+        weights["rear end collision"] += 0.2
+
+    total = sum(weights.values())
+    norm_weights = {k: v / total for k, v in weights.items()}
+    return random.choices(list(norm_weights.keys()), weights=norm_weights.values(), k=1)[0]
+
+# --- LOAD STREET DATA ---
+
+print("Loading Las Vegas street network...")
+G = ox.graph_from_place("Las Vegas, Nevada, USA", network_type='drive')
+edges = ox.graph_to_gdfs(G, nodes=False, edges=True)
+coords = []
+for geom in edges['geometry']:
+    if geom.geom_type == 'LineString':
+        coords.extend(list(geom.coords))
+    elif geom.geom_type == 'MultiLineString':
+        for line in geom.geoms:
+            coords.extend(list(line.coords))
+
+# --- GENERATE DATA ---
+
+total_accidents = 500
+year_weights = [1, 1.1, 1.2, 1.3, 1.4, 1.5]
+year_labels = list(range(2020, 2026))
+normalized = [w / sum(year_weights) for w in year_weights]
+year_distribution = dict(zip(year_labels, [int(w * total_accidents) for w in normalized]))
+
+data = []
+
+print("Generating synthetic accident data...")
+for year, count in year_distribution.items():
+    for _ in range(int(count * 0.6)):  # Hotspot accidents
+        hotspot_key = random.choice(list(hotspots.keys()))
+        hotspot = hotspots[hotspot_key]
+        lat, lon = sample_near_hotspot(hotspot['coords'])
+        timestamp, weather, month = generate_timestamp_and_weather(hotspot_key, year)
+        acc_type = choose_accident_type(hotspot['accident_weights'], month, weather)
+        age = random.randint(18, 80)
+        gender = random.choice(genders)
+        education = random.choice(education_levels)
+        make, model = random.choice(car_makes_models)
+        year_car = random.randint(2000, 2022)
+        is_fault = random.choice([0, 1])
+        payout = max(0, round(np.random.normal(8000 if not is_fault else 3000, 2000), 2))
+
+        data.append({
+            "latitude": lat,
+            "longitude": lon,
+            "accident_type": acc_type,
+            "driver_age": age,
+            "driver_gender": gender,
+            "driver_education": education,
+            "car_make": make,
+            "car_model": model,
+            "car_year": year_car,
+            "is_driver_at_fault": is_fault,
+            "policy_payout": payout,
+            "location_type": "hotspot",
+            "timestamp": timestamp,
+            "weather": weather
+        })
+
+    for _ in range(int(count * 0.4)):  # General accidents
+        lon, lat = random.choice(coords)
+        timestamp, weather, month = generate_timestamp_and_weather(None, year)
+        acc_type = choose_accident_type(default_accident_weights, month, weather)
+        age = random.randint(18, 80)
+        gender = random.choice(genders)
+        education = random.choice(education_levels)
+        make, model = random.choice(car_makes_models)
+        year_car = random.randint(2000, 2022)
+        is_fault = random.choice([0, 1])
+        payout = max(0, round(np.random.normal(8000 if not is_fault else 3000, 2000), 2))
+
+        data.append({
+            "latitude": lat,
+            "longitude": lon,
+            "accident_type": acc_type,
+            "driver_age": age,
+            "driver_gender": gender,
+            "driver_education": education,
+            "car_make": make,
+            "car_model": model,
+            "car_year": year_car,
+            "is_driver_at_fault": is_fault,
+            "policy_payout": payout,
+            "location_type": "general",
+            "timestamp": timestamp,
+            "weather": weather
+        })
+
+# --- EXPORT TO CSV FOR SEDONA ---
+
+print("Saving data to Sedona-compatible CSV...")
+df = pd.DataFrame(data)
+df["wkt"] = df.apply(lambda row: f"POINT ({row['longitude']} {row['latitude']})", axis=1)
+df.to_csv("las_vegas_accidents.csv", index=False)
+print("Done! File saved as 'accidents_sedona.csv'")
+
+
+import osmnx as ox
+import geopandas as gpd
+import pandas as pd
+from shapely.geometry import mapping
+
+# Ensure consistent CRS
+ox.settings.default_crs = "EPSG:4326"
+
+# City name
+city_name = "Las Vegas, Nevada, USA"
+
+# --- 1. DOWNLOAD CITY BOUNDARY ---
+
+print("Downloading city boundary...")
+city_boundary = ox.geocode_to_gdf(city_name)
+
+# Add WKT geometry column
+city_boundary['wkt'] = city_boundary['geometry'].apply(lambda geom: geom.wkt)
+city_boundary.drop(columns='geometry', inplace=True)
+
+# Export
+city_boundary.to_csv("las_vegas_boundary.csv", index=False)
+print("✓ City boundary saved as las_vegas_boundary.csv")
+
+# --- 2. DOWNLOAD STREET NETWORK (DRIVEABLE) ---
+
+print("Downloading street network...")
+G = ox.graph_from_place(city_name, network_type='drive')
+edges = ox.graph_to_gdfs(G, nodes=False, edges=True)
+
+# Prepare edges DataFrame
+edges = edges[["highway", "name", "geometry"]].copy()
+edges['wkt'] = edges['geometry'].apply(lambda geom: geom.wkt)
+edges.drop(columns='geometry', inplace=True)
+
+# Export
+edges.to_csv("las_vegas_streets.csv", index=False)
+print("✓ Street network saved as las_vegas_streets.csv")
+
+# --- 3. DOWNLOAD POINTS OF INTEREST (POIs) ---
+
+print("Downloading POIs...")
+tags = {
+    "amenity": True,
+    "shop": True,
+    "tourism": True,
+    "leisure": True,
+    "office": True
+}
+
+pois = ox.geometries_from_place(city_name, tags)
+
+# Filter relevant columns
+keep_cols = ['amenity', 'shop', 'tourism', 'leisure', 'office', 'name', 'geometry']
+pois = pois[[col for col in keep_cols if col in pois.columns]]
+
+# Keep only point and polygon geometries
+pois = pois[pois.geometry.type.isin(['Point', 'Polygon', 'MultiPolygon', 'LineString'])].copy()
+
+# Add WKT column for Sedona
+pois['wkt'] = pois['geometry'].apply(lambda g: g.wkt)
+pois.drop(columns='geometry', inplace=True)
+
+# Export
+pois.to_csv("las_vegas_pois.csv", index=False)
+print("✓ POIs saved as las_vegas_pois.csv")
+
+# --- SUMMARY ---
+
+print("\n All datasets saved as Sedona-compatible CSVs:")
+print(" - las_vegas_boundary.csv")
+print(" - las_vegas_streets.csv")
+print(" - las_vegas_pois.csv")
