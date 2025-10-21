@@ -6,6 +6,10 @@ This project is WIP.
 
 Showcase how to build a car insurance risk and pricing model based on Las Vegas car accident data using Sedona Geospatial, Spark and MLFlow in CAI.
 
+## Requirements
+
+* Python 3.13 runtime
+
 ## High Level Steps
 
 1. Create synthetic data simulating car accidents in Las Vegas. Data includes accident location, customer PII, vehicle information and associated fiancial cost.
