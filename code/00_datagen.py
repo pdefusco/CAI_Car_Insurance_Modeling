@@ -295,7 +295,7 @@ print("Saving data to Sedona-compatible CSV...")
 df = pd.DataFrame(data)
 df["wkt"] = df.apply(lambda row: f"POINT ({row['longitude']} {row['latitude']})", axis=1)
 df.to_csv("las_vegas_accidents.csv", index=False)
-print("✅ Done! File saved as 'las_vegas_accidents.csv'")
+print("File saved as 'las_vegas_accidents.csv'")
 
 import osmnx as ox
 import geopandas as gpd
@@ -322,7 +322,7 @@ edges.drop(columns='geometry', inplace=True)
 
 # Export
 edges.to_csv("las_vegas_streets.csv", index=False)
-print("✓ Street network saved as las_vegas_streets.csv")
+print("Street network saved as las_vegas_streets.csv")
 
 # ---- 3. Casinos POI's
 
@@ -345,7 +345,9 @@ las_vegas_metro = [
 ]
 
 # Get POIs for all places
-casino_pois = ox.features.features_from_place(las_vegas_metro, tags=casino_tags)
+#casino_pois = ox.features_from_place(las_vegas_metro, tags=casino_tags)
+casino_pois = ox.geometries_from_place(las_vegas_metro, tags=casino_tags)
+
 
 # Optional: Filter further by name (for known casinos)
 casino_pois = casino_pois[casino_pois['name'].str.contains("casino", case=False, na=False)]
@@ -353,5 +355,5 @@ casino_pois = casino_pois[casino_pois['name'].str.contains("casino", case=False,
 # Preview
 print(casino_pois[['name', 'amenity', 'leisure', 'tourism', 'geometry']].head())
 
-casino_pois.to_csv("casino_pois.csv", index=False)
-print("✓ Casino pois saved as las_vegas_streets.csv")
+casino_pois.to_csv("las_vegas_casino_pois.csv", index=False)
+print("Casino pois saved as las_vegas_streets.csv")
