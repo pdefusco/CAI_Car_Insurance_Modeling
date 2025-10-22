@@ -36,6 +36,7 @@
 #
 # #  Author(s): Paul de Fusco
 #***************************************************************************/
+
 import osmnx as ox
 import random
 import numpy as np
@@ -117,7 +118,7 @@ hotspots = {
     }
 }
 
-HOLIDAYS = [(1,1), (7,4), (11,25), (12,25)]
+HOLIDAYS = [(1, 1), (7, 4), (11, 25), (12, 25)]
 WEATHER_TYPES = ["clear", "rain", "snow"]
 
 genders = ["male", "female", "non-binary"]
@@ -156,7 +157,6 @@ def is_holiday(month, day):
 def generate_timestamp_and_weather(hotspot_key=None, year=None):
     if not year:
         year = random.randint(2020, 2025)
-
     month_weights = {
         12: 1.2, 1: 1.2, 2: 1.1, 6: 1.2, 7: 1.3, 8: 1.1,
         3: 1.0, 4: 1.0, 5: 1.0, 9: 1.0, 10: 1.0, 11: 1.0
@@ -168,17 +168,17 @@ def generate_timestamp_and_weather(hotspot_key=None, year=None):
     weather = random.choices(WEATHER_TYPES, weights=[0.7, 0.25, 0.05])[0]
 
     if holiday:
-        hour = random.choice(range(18,24))
+        hour = random.choice(range(18, 24))
     elif hotspot_key in ["charleston_rainbow", "tropicana_rainbow"]:
-        hour = random.choice([0,1,2,3,21,22,23,12])
+        hour = random.choice([0, 1, 2, 3, 21, 22, 23, 12])
     elif hotspot_key in ["sahara_decatur", "charleston_lamb", "flamingo_rainbow"]:
-        hour = random.choice([7,8,9,16,17,18,12])
+        hour = random.choice([7, 8, 9, 16, 17, 18, 12])
     elif hotspot_key == "las_vegas_strip":
-        hour = random.choice([22,23,0,1,2,3])
+        hour = random.choice([22, 23, 0, 1, 2, 3])
     else:
-        hour = random.randint(0,23)
+        hour = random.randint(0, 23)
 
-    minute = random.randint(0,59)
+    minute = random.randint(0, 59)
     try:
         dt = datetime(year, month, day, hour, minute, 0)
     except ValueError:
@@ -188,10 +188,10 @@ def generate_timestamp_and_weather(hotspot_key=None, year=None):
 
 def choose_accident_type(base_weights, month, weather):
     weights = base_weights.copy()
-    if month in [12,1,2]:
+    if month in [12, 1, 2]:
         weights["rear end collision"] += 0.1
         weights["single vehicle accident"] += 0.1
-    elif month in [6,7,8]:
+    elif month in [6, 7, 8]:
         weights["t bone collision"] += 0.1
         weights["side collision"] += 0.1
     if weather == "rain":
@@ -202,7 +202,7 @@ def choose_accident_type(base_weights, month, weather):
         weights["rear end collision"] += 0.2
 
     total = sum(weights.values())
-    norm_weights = {k: v/total for k,v in weights.items()}
+    norm_weights = {k: v / total for k, v in weights.items()}
     return random.choices(list(norm_weights.keys()), weights=norm_weights.values(), k=1)[0]
 
 # --- LOAD STREET NETWORK ---
@@ -234,6 +234,8 @@ normalized = [w / sum(year_weights) for w in year_weights]
 year_distribution = dict(zip(year_labels, [int(w * total_accidents) for w in normalized]))
 
 data = []
+customer_pii = []
+used_customer_ids = set()
 accident_counter = 1
 
 print("Generating synthetic accident data...")
@@ -247,26 +249,45 @@ for year, count in year_distribution.items():
             lat, lon = sample_near_hotspot(hotspot["coords"])
         timestamp, weather, month = generate_timestamp_and_weather(hotspot_key, year)
         acc_type = choose_accident_type(hotspot["accident_weights"], month, weather)
+
+        # Generate unique customer ID
+        while True:
+            customer_id = f"CUST{random.randint(100000, 999999)}"
+            if customer_id not in used_customer_ids:
+                used_customer_ids.add(customer_id)
+                break
+
+        # Generate PII
         age = random.randint(18, 80)
         gender = random.choice(genders)
         education = random.choice(education_levels)
+        street_names = ["Flamingo Rd", "Tropicana Ave", "Rainbow Blvd", "Charleston Blvd", "Decatur Blvd", "Lamb Blvd", "Eastern Ave"]
+        address = f"{random.randint(100, 9999)} {random.choice(street_names)}, Las Vegas, NV {random.randint(89101, 89199)}"
+        phone = f"702-{random.randint(100,999)}-{random.randint(1000,9999)}"
+        email = f"user{customer_id[-4:]}@example.com"
+
+        customer_pii.append({
+            "customer_id": customer_id,
+            "driver_age": age,
+            "driver_gender": gender,
+            "driver_education": education,
+            "residential_address": address,
+            "phone_number": phone,
+            "email": email
+        })
+
         make, model = random.choice(car_makes_models)
         year_car = random.randint(2000, 2022)
         is_fault = random.choice([0, 1])
-        if hotspot_key == "las_vegas_strip":
-            is_dui = random.choices([0, 1], weights=[0.7, 0.3])[0]
-        else:
-            is_dui = random.choices([0, 1], weights=[0.85, 0.15])[0]
+        is_dui = random.choices([0, 1], weights=[0.7, 0.3])[0] if hotspot_key == "las_vegas_strip" else random.choices([0, 1], weights=[0.85, 0.15])[0]
         payout = 0 if is_dui else max(0, round(np.random.normal(8000 if not is_fault else 3000, 2000), 2))
 
         data.append({
             "accident_id": accident_counter,
+            "customer_id": customer_id,
             "latitude": lat,
             "longitude": lon,
             "accident_type": acc_type,
-            "driver_age": age,
-            "driver_gender": gender,
-            "driver_education": education,
             "car_make": make,
             "car_model": model,
             "car_year": year_car,
@@ -283,9 +304,31 @@ for year, count in year_distribution.items():
         lon, lat = random.choice(coords)
         timestamp, weather, month = generate_timestamp_and_weather(None, year)
         acc_type = choose_accident_type(default_accident_weights, month, weather)
+
+        while True:
+            customer_id = f"CUST{random.randint(100000, 999999)}"
+            if customer_id not in used_customer_ids:
+                used_customer_ids.add(customer_id)
+                break
+
         age = random.randint(18, 80)
         gender = random.choice(genders)
         education = random.choice(education_levels)
+        street_names = ["Flamingo Rd", "Tropicana Ave", "Rainbow Blvd", "Charleston Blvd", "Decatur Blvd", "Lamb Blvd", "Eastern Ave"]
+        address = f"{random.randint(100, 9999)} {random.choice(street_names)}, Las Vegas, NV {random.randint(89101, 89199)}"
+        phone = f"702-{random.randint(100,999)}-{random.randint(1000,9999)}"
+        email = f"user{customer_id[-4:]}@example.com"
+
+        customer_pii.append({
+            "customer_id": customer_id,
+            "driver_age": age,
+            "driver_gender": gender,
+            "driver_education": education,
+            "residential_address": address,
+            "phone_number": phone,
+            "email": email
+        })
+
         make, model = random.choice(car_makes_models)
         year_car = random.randint(2000, 2022)
         is_fault = random.choice([0, 1])
@@ -294,12 +337,10 @@ for year, count in year_distribution.items():
 
         data.append({
             "accident_id": accident_counter,
+            "customer_id": customer_id,
             "latitude": lat,
             "longitude": lon,
             "accident_type": acc_type,
-            "driver_age": age,
-            "driver_gender": gender,
-            "driver_education": education,
             "car_make": make,
             "car_model": model,
             "car_year": year_car,
@@ -318,6 +359,11 @@ print("Saving data to Sedona‑compatible CSV...")
 df = pd.DataFrame(data)
 df["wkt"] = df.apply(lambda row: f"POINT ({row['longitude']} {row['latitude']})", axis=1)
 df.to_csv("las_vegas_accidents.csv", index=False)
+
+df_pii = pd.DataFrame(customer_pii)
+df_pii.to_csv("las_vegas_customer_pii.csv", index=False)
+
+
 
 # --- 2. DOWNLOAD STREET NETWORK (DRIVEABLE) ---
 
