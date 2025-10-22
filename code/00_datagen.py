@@ -36,7 +36,6 @@
 #
 # #  Author(s): Paul de Fusco
 #***************************************************************************/
-
 import osmnx as ox
 import random
 import numpy as np
@@ -47,7 +46,6 @@ from datetime import datetime
 
 # --- CONFIGURATION ---
 
-# Define accident hotspots
 hotspots = {
     "charleston_rainbow": {
         "coords": (36.1593, -115.2457),
@@ -98,10 +96,28 @@ hotspots = {
             "side collision": 0.1,
             "head on collision": 0.1
         }
+    },
+    "las_vegas_strip": {
+        "coords": (36.1147, -115.1728),
+        "accident_weights": {
+            "rear end collision": 0.35,
+            "t bone collision": 0.35,
+            "side collision": 0.15,
+            "head on collision": 0.1,
+            "single vehicle accident": 0.05
+        },
+        "strip_centroids": [
+            (36.0825, -115.1719),
+            (36.0878, -115.1721),
+            (36.0999, -115.1723),
+            (36.1069, -115.1725),
+            (36.1126, -115.1727),
+            (36.1210, -115.1729)
+        ]
     }
 }
 
-HOLIDAYS = [(1, 1), (7, 4), (11, 25), (12, 25)]
+HOLIDAYS = [(1,1), (7,4), (11,25), (12,25)]
 WEATHER_TYPES = ["clear", "rain", "snow"]
 
 genders = ["male", "female", "non-binary"]
@@ -128,6 +144,12 @@ def sample_near_hotspot(center, radius_meters=300):
     new_lon = np.random.normal(lon, delta_lon / 2)
     return new_lat, new_lon
 
+def sample_along_strip(centroids):
+    base_point = random.choice(centroids)
+    jitter_lat = np.random.normal(0, 0.00045)
+    jitter_lon = np.random.normal(0, 0.00045)
+    return base_point[0] + jitter_lat, base_point[1] + jitter_lon
+
 def is_holiday(month, day):
     return (month, day) in HOLIDAYS
 
@@ -146,15 +168,17 @@ def generate_timestamp_and_weather(hotspot_key=None, year=None):
     weather = random.choices(WEATHER_TYPES, weights=[0.7, 0.25, 0.05])[0]
 
     if holiday:
-        hour = random.choices(range(18, 24), k=1)[0]
+        hour = random.choice(range(18,24))
     elif hotspot_key in ["charleston_rainbow", "tropicana_rainbow"]:
-        hour = random.choices([0, 1, 2, 3, 21, 22, 23, 12], k=1)[0]
+        hour = random.choice([0,1,2,3,21,22,23,12])
     elif hotspot_key in ["sahara_decatur", "charleston_lamb", "flamingo_rainbow"]:
-        hour = random.choices([7, 8, 9, 16, 17, 18, 12], k=1)[0]
+        hour = random.choice([7,8,9,16,17,18,12])
+    elif hotspot_key == "las_vegas_strip":
+        hour = random.choice([22,23,0,1,2,3])
     else:
-        hour = random.randint(0, 23)
+        hour = random.randint(0,23)
 
-    minute = random.randint(0, 59)
+    minute = random.randint(0,59)
     try:
         dt = datetime(year, month, day, hour, minute, 0)
     except ValueError:
@@ -164,10 +188,10 @@ def generate_timestamp_and_weather(hotspot_key=None, year=None):
 
 def choose_accident_type(base_weights, month, weather):
     weights = base_weights.copy()
-    if month in [12, 1, 2]:
+    if month in [12,1,2]:
         weights["rear end collision"] += 0.1
         weights["single vehicle accident"] += 0.1
-    elif month in [6, 7, 8]:
+    elif month in [6,7,8]:
         weights["t bone collision"] += 0.1
         weights["side collision"] += 0.1
     if weather == "rain":
@@ -178,14 +202,14 @@ def choose_accident_type(base_weights, month, weather):
         weights["rear end collision"] += 0.2
 
     total = sum(weights.values())
-    norm_weights = {k: v / total for k, v in weights.items()}
+    norm_weights = {k: v/total for k,v in weights.items()}
     return random.choices(list(norm_weights.keys()), weights=norm_weights.values(), k=1)[0]
 
-# --- LOAD METRO STREET NETWORK ---
+# --- LOAD STREET NETWORK ---
 
 print("Loading Las Vegas metro area street network...")
 places = [
-    "Las Vegas, Nevada, USA", "North Las Vegas, Nevada, USA",
+    "Las Vegas, Nevada, USA", "North Las Vegas, Nevada, USA",
     "Henderson, Nevada, USA", "Summerlin South, Nevada, USA",
     "Paradise, Nevada, USA", "Enterprise, Nevada, USA",
     "Spring Valley, Nevada, USA", "Sunrise Manor, Nevada, USA"
@@ -210,27 +234,31 @@ normalized = [w / sum(year_weights) for w in year_weights]
 year_distribution = dict(zip(year_labels, [int(w * total_accidents) for w in normalized]))
 
 data = []
+accident_counter = 1
 
 print("Generating synthetic accident data...")
 for year, count in year_distribution.items():
     for _ in range(int(count * 0.6)):  # Hotspot accidents
         hotspot_key = random.choice(list(hotspots.keys()))
         hotspot = hotspots[hotspot_key]
-        lat, lon = sample_near_hotspot(hotspot['coords'])
+        if hotspot_key == "las_vegas_strip":
+            lat, lon = sample_along_strip(hotspot["strip_centroids"])
+        else:
+            lat, lon = sample_near_hotspot(hotspot["coords"])
         timestamp, weather, month = generate_timestamp_and_weather(hotspot_key, year)
-        acc_type = choose_accident_type(hotspot['accident_weights'], month, weather)
+        acc_type = choose_accident_type(hotspot["accident_weights"], month, weather)
         age = random.randint(18, 80)
         gender = random.choice(genders)
         education = random.choice(education_levels)
         make, model = random.choice(car_makes_models)
         year_car = random.randint(2000, 2022)
         is_fault = random.choice([0, 1])
-        is_dui = random.choices([0, 1], weights=[0.85, 0.15])[0]
+        if hotspot_key == "las_vegas_strip":
+            is_dui = random.choices([0, 1], weights=[0.7, 0.3])[0]
+        else:
+            is_dui = random.choices([0, 1], weights=[0.85, 0.15])[0]
         payout = 0 if is_dui else max(0, round(np.random.normal(8000 if not is_fault else 3000, 2000), 2))
 
-        accident_counter = 1  # Initialize a counter before your loops
-
-        # Inside each loop where you append to `data`:
         data.append({
             "accident_id": accident_counter,
             "latitude": lat,
@@ -245,12 +273,11 @@ for year, count in year_distribution.items():
             "is_driver_at_fault": is_fault,
             "is_driver_dui": is_dui,
             "policy_payout": payout,
-            "location_type": "hotspot",  # or "general"
+            "location_type": "hotspot",
             "timestamp": timestamp,
             "weather": weather
         })
         accident_counter += 1
-
 
     for _ in range(int(count * 0.4)):  # General accidents
         lon, lat = random.choice(coords)
@@ -265,9 +292,6 @@ for year, count in year_distribution.items():
         is_dui = random.choices([0, 1], weights=[0.9, 0.1])[0]
         payout = 0 if is_dui else max(0, round(np.random.normal(8000 if not is_fault else 3000, 2000), 2))
 
-        accident_counter = 1  # Initialize a counter before your loops
-
-        # Inside each loop where you append to `data`:
         data.append({
             "accident_id": accident_counter,
             "latitude": lat,
@@ -282,32 +306,18 @@ for year, count in year_distribution.items():
             "is_driver_at_fault": is_fault,
             "is_driver_dui": is_dui,
             "policy_payout": payout,
-            "location_type": "hotspot",  # or "general"
+            "location_type": "general",
             "timestamp": timestamp,
             "weather": weather
         })
         accident_counter += 1
 
-
 # --- EXPORT TO CSV ---
 
-print("Saving data to Sedona-compatible CSV...")
+print("Saving data to Sedona‑compatible CSV...")
 df = pd.DataFrame(data)
 df["wkt"] = df.apply(lambda row: f"POINT ({row['longitude']} {row['latitude']})", axis=1)
 df.to_csv("las_vegas_accidents.csv", index=False)
-print("File saved as 'las_vegas_accidents.csv'")
-
-import osmnx as ox
-import geopandas as gpd
-import pandas as pd
-from shapely.geometry import mapping
-
-# Ensure consistent CRS
-ox.settings.default_crs = "EPSG:4326"
-
-# City name
-city_name = "Las Vegas, Nevada, USA"
-
 
 # --- 2. DOWNLOAD STREET NETWORK (DRIVEABLE) ---
 
@@ -322,7 +332,6 @@ edges.drop(columns='geometry', inplace=True)
 
 # Export
 edges.to_csv("las_vegas_streets.csv", index=False)
-print("Street network saved as las_vegas_streets.csv")
 
 # ---- 3. Casinos POI's
 
@@ -356,4 +365,3 @@ casino_pois = casino_pois[casino_pois['name'].str.contains("casino", case=False,
 print(casino_pois[['name', 'amenity', 'leisure', 'tourism', 'geometry']].head())
 
 casino_pois.to_csv("las_vegas_casino_pois.csv", index=False)
-print("Casino pois saved as las_vegas_streets.csv")
