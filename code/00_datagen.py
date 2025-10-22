@@ -321,8 +321,17 @@ df.to_csv("las_vegas_accidents.csv", index=False)
 
 # --- 2. DOWNLOAD STREET NETWORK (DRIVEABLE) ---
 
+las_vegas_metro = [
+    "Las Vegas, Nevada, USA",
+    "Henderson, Nevada, USA",
+    "North Las Vegas, Nevada, USA",
+    "Paradise, Nevada, USA",
+    "Spring Valley, Nevada, USA",
+    "Enterprise, Nevada, USA"
+]
+
 print("Downloading street network...")
-G = ox.graph_from_place(city_name, network_type='drive')
+G = ox.graph_from_place(las_vegas_metro, network_type='drive')
 edges = ox.graph_to_gdfs(G, nodes=False, edges=True)
 
 # Prepare edges DataFrame
