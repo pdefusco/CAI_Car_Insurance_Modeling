@@ -129,5 +129,3 @@ for _, row in df.iterrows():
 
 # === 6. Save and display ===
 m.save("las_vegas_accidents_interactive.html")
-print("✅ Map saved as 'las_vegas_accidents_interactive.html'")
-m
