@@ -363,8 +363,6 @@ df.to_csv("las_vegas_accidents.csv", index=False)
 df_pii = pd.DataFrame(customer_pii)
 df_pii.to_csv("las_vegas_customer_pii.csv", index=False)
 
-
-
 # --- 2. DOWNLOAD STREET NETWORK (DRIVEABLE) ---
 
 las_vegas_metro = [
@@ -393,10 +391,14 @@ edges.to_csv("las_vegas_streets.csv", index=False)
 import osmnx as ox
 
 # Define casino-related OSM tags
-casino_tags = {
-    "amenity": ["casino"],
-    "leisure": ["adult_gaming_centre"],
-    "tourism": ["attraction"]
+tags = {
+    "amenity": True,
+    "shop": True,
+    "tourism": True,
+    "leisure": True,
+    "office": True,
+    "craft": True,
+    "man_made": True
 }
 
 las_vegas_metro = [
@@ -410,13 +412,30 @@ las_vegas_metro = [
 
 # Get POIs for all places
 #casino_pois = ox.features_from_place(las_vegas_metro, tags=casino_tags)
-casino_pois = ox.geometries_from_place(las_vegas_metro, tags=casino_tags)
+las_vegas_pois = ox.features_from_place(las_vegas_metro, tags=tags)
 
+las_vegas_pois = las_vegas_pois[las_vegas_pois.geometry.geom_type == "Point"]
 
 # Optional: Filter further by name (for known casinos)
-casino_pois = casino_pois[casino_pois['name'].str.contains("casino", case=False, na=False)]
+#casino_pois = casino_pois[casino_pois['name'].str.contains("casino", case=False, na=False)]
 
 # Preview
-print(casino_pois[['name', 'amenity', 'leisure', 'tourism', 'geometry']].head())
+#print(casino_pois[['name', 'amenity', 'leisure', 'tourism', 'geometry']].head())
 
-casino_pois.to_csv("las_vegas_casino_pois.csv", index=False)
+las_vegas_pois.to_csv("las_vegas_pois.csv", index=False)
+
+
+# ---- 4. Administrative Boundaries
+
+import osmnx as ox
+import geopandas as gpd
+
+metro_name = "Las Vegas metropolitan area, Nevada, USA"
+tags = {"place": ["neighbourhood", "suburb"]}
+neighborhoods = ox.features_from_place(metro_name, tags)
+neighborhoods = neighborhoods[["name", "place", "geometry"]].dropna(subset=["name"])
+neighborhoods = neighborhoods.to_crs(4326)  # WGS 84 for web mapping
+
+# Or export to CSV (geometry as WKT)
+neighborhoods["geometry"] = neighborhoods["geometry"].to_wkt()
+neighborhoods.to_csv("las_vegas_neighborhoods.csv", index=False)
